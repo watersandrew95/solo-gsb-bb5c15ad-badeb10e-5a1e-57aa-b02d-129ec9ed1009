@@ -12,6 +12,31 @@ const MAX_PARENTS_PER_CHILD = 2;
 const MAX_MEMBERS = 30;
 const MAX_BATCH_EDGES = 100;
 const MAX_BACKUP_NAME_LENGTH = 50;
+const MEMORIAL_FIELDS = ['birthday', 'deathday'];
+const MEMORIAL_FIELD_LABELS = { birthday: '生日', deathday: '忌日' };
+
+/**
+ * 解析备份 / 数据文件中的纪念日月日字段（公历 "MM-DD"，可省略前导零）。
+ * 缺省字段（undefined / null / 空串）视为未登记，归一化为 null；
+ * 格式非法或月日不存在（如 02-30、13-01）返回 null 并由调用方逐项报错。
+ * 2 月 29 日是合法月日（平年落到 28 日在求下一次日期时处理）。
+ */
+function normalizeMemorialValue(raw) {
+  if (raw === undefined || raw === null) return { value: null };
+  if (typeof raw !== 'string') return { error: '应为 "MM-DD" 形式的字符串或省略该字段' };
+  const text = raw.trim();
+  if (!text) return { value: null };
+  const match = /^(\d{1,2})[/ .-](\d{1,2})$/.exec(text);
+  if (!match) return { error: '日期格式应为「月-日」，如 02-29' };
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (month < 1 || month > 12) return { error: `月份 ${month} 无效（须在 1–12 之间）` };
+  const maxDay = month === 2 ? 29 : [4, 6, 9, 11].includes(month) ? 30 : 31;
+  if (day < 1 || day > maxDay) {
+    return { error: `${month} 月没有 ${day} 日（该月最多 ${maxDay} 天）` };
+  }
+  return { value: `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` };
+}
 
 /** 创建一个空的家谱状态对象 */
 function createState(maxMembers = MAX_MEMBERS) {
@@ -823,7 +848,7 @@ function validateBackup(raw, maxMembers = MAX_MEMBERS) {
   }
   if (errors.length > 0) return done([], []);
 
-  // ---- 成员：结构、姓名规则、ID 重复 ----
+  // ---- 成员：结构、姓名规则、ID 重复、生日 / 忌日月日 ----
   if (rawMembers.length > maxMembers) {
     fileError(`成员共 ${rawMembers.length} 人，超过 ${maxMembers} 人上限`);
   }
@@ -853,6 +878,25 @@ function validateBackup(raw, maxMembers = MAX_MEMBERS) {
       );
       ok = false;
     }
+    // 生日 / 忌日：旧备份可不含这两个字段（视为空）；含字段则必须是合法公历月日
+    const memorials = {};
+    for (const field of MEMORIAL_FIELDS) {
+      if (!(field in entry)) {
+        memorials[field] = null; // 旧备份缺少纪念日字段，视为空
+        continue;
+      }
+      const parsed = normalizeMemorialValue(entry[field]);
+      if (parsed.error) {
+        memberError(
+          index,
+          `${nth}${name ? `「${name}」` : ''}的${MEMORIAL_FIELD_LABELS[field]}月日非法：${parsed.error}`,
+        );
+        ok = false;
+        memorials[field] = null;
+      } else {
+        memorials[field] = parsed.value;
+      }
+    }
     if (!id) return;
     if (idFirstIndex.has(id)) {
       memberError(index, `${nth}的 ID "${id}" 与第 ${idFirstIndex.get(id) + 1} 项重复`);
@@ -860,7 +904,7 @@ function validateBackup(raw, maxMembers = MAX_MEMBERS) {
     }
     idFirstIndex.set(id, index);
     if (name) nameOfId.set(id, name);
-    if (ok) members.push({ id, name });
+    if (ok) members.push({ id, name, birthday: memorials.birthday, deathday: memorials.deathday });
   });
 
   const label = (id) => (nameOfId.has(id) ? `「${nameOfId.get(id)}」` : `ID "${id}"`);
@@ -955,6 +999,9 @@ module.exports = {
   MAX_MEMBERS,
   MAX_BATCH_EDGES,
   MAX_BACKUP_NAME_LENGTH,
+  MEMORIAL_FIELDS,
+  MEMORIAL_FIELD_LABELS,
+  normalizeMemorialValue,
   createState,
   getMember,
   isReachableUp,

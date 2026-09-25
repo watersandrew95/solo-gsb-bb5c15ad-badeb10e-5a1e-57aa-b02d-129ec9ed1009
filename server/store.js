@@ -24,8 +24,10 @@ const {
   validateBackup,
   previewMergeMembers,
   isReachableUp,
+  normalizeMemorialValue,
   MAX_MEMBERS,
 } = require('./familyGraph');
+const { parseMonthDay, buildUpcoming } = require('./memorials');
 
 function createStore(filePath) {
   const loaded = loadState(filePath);
@@ -38,7 +40,7 @@ function createStore(filePath) {
   function serializeFamily() {
     return {
       maxMembers: state.maxMembers,
-      members: state.members.map((m) => ({ id: m.id, name: m.name })),
+      members: state.members.map(serializeMember),
       edges: edgesList(state),
     };
   }
@@ -98,12 +100,63 @@ function createStore(filePath) {
     return {
       version,
       maxMembers: state.maxMembers,
-      members: state.members.map((m) => ({ id: m.id, name: m.name })),
+      members: state.members.map(serializeMember),
       edges: edgesList(state),
       undo: undo
         ? { label: undo.label, time: undo.time, version: undo.version }
         : null,
     };
+  }
+
+  /**
+   * 登记 / 修改 / 删除一名成员的生日与忌日（公历月日，"MM-DD"；null 表示清空）。
+   * 两类纪念日必须显式给出（字段缺失视为请求不完整，整单拒绝）：
+   * 非法月日（格式错误或该月无此日，如 02-30）一律拒绝且**不写入任何数据**；
+   * 与现值完全一致（无任何变化）也不产生写入。合法时走统一 commit 入口：
+   * 变更前完整家谱（含纪念日）成为唯一可撤销快照，版本 +1、一次落盘。
+   */
+  function setMemorials(id, rawBirthday, rawDeathday) {
+    // 两类纪念日都必须显式给出（null 表示清空该日）；字段缺失视为请求不完整，整单拒绝
+    if (rawBirthday === undefined || rawDeathday === undefined) {
+      return { error: '请同时提供生日与忌日字段（不登记请传 null）', status: 400 };
+    }
+    const member = state.members.find((m) => m.id === id);
+    if (!member) return { error: '成员不存在', status: 404 };
+
+    const normalize = (value, fieldLabel) => {
+      if (value === null) return { value: null };
+      const parsed = parseMonthDay(value);
+      if (parsed.error) return { error: `${fieldLabel}：${parsed.error}` };
+      return { value: parsed.value };
+    };
+    const b = normalize(rawBirthday, '生日');
+    const d = normalize(rawDeathday, '忌日');
+    if (b.error || d.error) {
+      return { error: b.error || d.error };
+    }
+    const nextBirthday = b.value;
+    const nextDeathday = d.value;
+    if (nextBirthday === member.birthday && nextDeathday === member.deathday) {
+      return { error: '纪念日没有变化，无需保存', unchanged: true };
+    }
+
+    const changes = describeMemorialChanges(member, nextBirthday, nextDeathday);
+    commit(`修改成员「${member.name}」的纪念日（${changes}）`, () => {
+      member.birthday = nextBirthday;
+      member.deathday = nextDeathday;
+    });
+    return { error: null, member: serializeMember(member) };
+  }
+
+  /**
+   * 未来 30 天纪念日清单（只读，不写入、不推进版本）。
+   * today 为浏览器提交的用户本地日期 "YYYY-MM-DD"：逐年求每名下一次日期，
+   * 2 月 29 日平年落到 2 月 28 日；同日按姓名、类型稳定排序，附距今天数。
+   */
+  function upcomingMemorials(today) {
+    const result = buildUpcoming(state.members.map(serializeMember), today);
+    if (result.error) return { error: result.error, status: 400 };
+    return { error: null, ...result };
   }
 
   function addMember(rawName) {
@@ -112,7 +165,7 @@ function createStore(filePath) {
     if (state.members.length >= state.maxMembers) {
       return { error: `成员数量上限为 ${state.maxMembers} 人，无法继续添加` };
     }
-    const member = { id: crypto.randomUUID(), name };
+    const member = { id: crypto.randomUUID(), name, birthday: null, deathday: null };
     commit(`添加成员「${name}」`, () => {
       state.members.push(member);
       state.parentsOf[member.id] = [];
@@ -349,6 +402,8 @@ function createStore(filePath) {
     previewRestore,
     restoreBackup,
     undoLast,
+    setMemorials,
+    upcomingMemorials,
     getState: () => state,
     getVersion: () => version,
   };
@@ -362,7 +417,7 @@ function writeFile(filePath, version, state, undo) {
   const snapshot = {
     version,
     maxMembers: state.maxMembers,
-    members: state.members.map((m) => ({ id: m.id, name: m.name })),
+    members: state.members.map(serializeMember),
     edges: edgesList(state),
     undo: undo
       ? {
@@ -385,6 +440,30 @@ function edgesList(state) {
   return edges;
 }
 
+/** 成员对外 / 落盘的统一形态：始终带上生日与忌日（未登记为 null） */
+function serializeMember(m) {
+  return {
+    id: m.id,
+    name: m.name,
+    birthday: typeof m.birthday === 'string' ? m.birthday : null,
+    deathday: typeof m.deathday === 'string' ? m.deathday : null,
+  };
+}
+
+/** 生成纪念日变更说明：区分「登记 / 修改 / 清空」生日与忌日 */
+function describeMemorialChanges(member, nextBirthday, nextDeathday) {
+  const parts = [];
+  const describeOne = (label, from, to) => {
+    if (from === to) return;
+    if (from && to) parts.push(`${label} ${from} → ${to}`);
+    else if (to) parts.push(`登记${label} ${to}`);
+    else parts.push(`清空${label}（原 ${from}）`);
+  };
+  describeOne('生日', member.birthday, nextBirthday);
+  describeOne('忌日', member.deathday, nextDeathday);
+  return parts.length ? parts.join('、') : '无变化';
+}
+
 /** 把序列化的家谱（成员 + 边表）重建为运行时状态，复用与启动加载相同的净化规则 */
 function familyToState(family) {
   return buildState({
@@ -402,7 +481,12 @@ function familyToState(family) {
 function stateFromValidBackup(members, edges, maxMembers) {
   const state = createState(Number.isInteger(maxMembers) ? maxMembers : MAX_MEMBERS);
   for (const m of members) {
-    state.members.push({ id: m.id, name: m.name });
+    state.members.push({
+      id: m.id,
+      name: m.name,
+      birthday: typeof m.birthday === 'string' ? m.birthday : null,
+      deathday: typeof m.deathday === 'string' ? m.deathday : null,
+    });
     state.parentsOf[m.id] = [];
   }
   for (const e of edges) {
@@ -446,7 +530,13 @@ function buildState(raw) {
   if (raw && Array.isArray(raw.members)) {
     for (const m of raw.members) {
       if (m && typeof m.id === 'string' && typeof m.name === 'string') {
-        state.members.push({ id: m.id, name: m.name });
+        state.members.push({
+          id: m.id,
+          name: m.name,
+          // 旧数据文件缺少纪念日字段视为空；含字段则净化为合法 "MM-DD" 或 null
+          birthday: sanitizeMemorial(m.birthday),
+          deathday: sanitizeMemorial(m.deathday),
+        });
       }
     }
   }
@@ -483,12 +573,18 @@ function buildState(raw) {
   return state;
 }
 
+/** 净化数据文件中的纪念日月日：缺失 / 非法（手工改坏）一律视为空，绝不抛错 */
+function sanitizeMemorial(raw) {
+  const parsed = normalizeMemorialValue(raw);
+  return parsed.error ? null : parsed.value;
+}
+
 /** 净化撤销快照中保存的家谱，返回与序列化格式一致的纯数据 */
 function serializeFamilyFromRaw(rawFamily) {
   const restored = buildState(rawFamily);
   return {
     maxMembers: restored.maxMembers,
-    members: restored.members.map((m) => ({ id: m.id, name: m.name })),
+    members: restored.members.map(serializeMember),
     edges: edgesList(restored),
   };
 }

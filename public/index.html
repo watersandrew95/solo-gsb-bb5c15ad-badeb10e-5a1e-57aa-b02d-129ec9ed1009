@@ -15,7 +15,9 @@
       选中两人即可沿父母链查询总代数最少的全部共同祖先及最短亲缘路径；
       还可一键核查全部「辈分矛盾」：同一对祖先与后代沿不同路径的最少 / 最多代数不一致时逐条列出；
       「变更影响预览」可在不落盘的假设图上试算新增 / 移除一条关系前后辈分矛盾的逐对变化；
-      「备份与恢复」可下载仅含成员 ID、姓名与关系的 JSON 备份，选择备份文件预览校验后整体恢复（可撤销）。
+      「备份与恢复」可下载含成员 ID、姓名、生日 / 忌日与关系的 JSON 备份，选择备份文件预览校验后整体恢复（可撤销）。
+      「成员纪念日」可为每名成员各登记一个生日与一个忌日的公历月日（可随时修改、删除，随成员数据持久化），
+      并按浏览器本地日期生成包含当天的未来 30 天清单：逐年求每项下一次日期，2 月 29 日在平年落到 2 月 28 日。
     </p>
   </header>
 
@@ -29,7 +31,7 @@
       </div>
       <p class="empty-hint">
         每次成功写入都会保存变更前的完整家谱作为唯一可撤销快照（重启后仍可撤销）；
-        撤销会恢复成员 ID、姓名与全部关系原貌、推进版本并清空快照，只能撤销一次。
+        撤销会恢复成员 ID、姓名、生日 / 忌日与全部关系原貌、推进版本并清空快照，只能撤销一次。
       </p>
     </section>
 
@@ -189,7 +191,7 @@
       <div class="backup-actions">
         <button type="button" id="backup-download">下载备份（JSON）</button>
         <p class="empty-hint">
-          备份文件仅含成员 ID、姓名与父母→子女关系，可迁移到另一台本地实例恢复。
+          备份文件含成员 ID、姓名、生日 / 忌日与父母→子女关系，可迁移到另一台本地实例恢复；旧版本备份缺少纪念日字段时恢复后视为空。
         </p>
       </div>
       <div id="restore-panel" class="batch-panel">
@@ -210,6 +212,57 @@
           若预览后文件被调换或家谱被修改，确认会被拒绝并要求重新预览。
         </p>
       </div>
+    </section>
+
+    <!-- 成员纪念日 -->
+    <section class="card wide" aria-labelledby="memorial-title">
+      <h2 id="memorial-title">⑦ 成员纪念日（生日 / 忌日）</h2>
+      <p class="empty-hint">
+        每名成员各可登记一个<strong>生日</strong>与一个<strong>忌日</strong>的公历月日（只填月、日，不含年份；
+        2 月 29 日可登记，平年自动落到 2 月 28 日）。纪念日随成员数据一起持久化，
+        删除成员、撤销与备份恢复都会一并处理；旧备份缺少纪念日字段时视为空。
+      </p>
+
+      <!-- 未来 30 天 -->
+      <div class="memorial-upcoming">
+        <div class="batch-head">
+          <h3>未来 30 天 <span id="memorial-today" class="badge"></span></h3>
+          <div class="batch-actions">
+            <button type="button" id="memorial-refresh">按今天刷新</button>
+          </div>
+        </div>
+        <ul id="memorial-upcoming-list" class="memorial-list" aria-live="polite"></ul>
+      </div>
+
+      <!-- 登记 / 修改 / 删除 -->
+      <div class="batch-panel">
+        <div class="batch-head">
+          <h3>登记 / 修改 / 删除</h3>
+        </div>
+        <form id="memorial-form" class="memorial-form">
+          <label>
+            成员
+            <select id="memorial-member"></select>
+          </label>
+          <label>
+            生日（公历月-日，留空表示不登记）
+            <input type="text" id="memorial-birthday" maxlength="5" placeholder="如 02-29" autocomplete="off" inputmode="numeric" />
+          </label>
+          <label>
+            忌日（公历月-日，留空表示不登记）
+            <input type="text" id="memorial-deathday" maxlength="5" placeholder="如 08-07" autocomplete="off" inputmode="numeric" />
+          </label>
+          <button type="submit" class="primary">保存纪念日</button>
+        </form>
+        <p id="memorial-status" class="batch-status" hidden></p>
+        <p class="empty-hint">
+          在下方清单点击「编辑」会把该成员现有生日 / 忌日填入表单；清空某个输入框再保存即<strong>删除</strong>该纪念日。
+          非法日期（如 02-30、13-01）会被服务端拒绝且不改变任何数据。
+        </p>
+      </div>
+
+      <h3 class="list-title">已登记清单 <span id="memorial-count" class="badge">0</span></h3>
+      <ul id="memorial-registered-list" class="memorial-list" aria-live="polite"></ul>
     </section>
   </main>
 

@@ -58,11 +58,44 @@ app.patch('/api/members/:id', (req, res) => {
   res.json(store.list());
 });
 
-/** 删除成员（级联删除相关关系） */
+/** 删除成员（级联删除相关关系及其生日 / 忌日登记） */
 app.delete('/api/members/:id', (req, res) => {
   const result = store.deleteMember(req.params.id);
   if (result.error) return sendError(res, 404, result.error);
   res.json(store.list());
+});
+
+/**
+ * 登记 / 修改 / 删除成员纪念日：每名成员各一个生日与一个忌日（公历月日 "MM-DD"）。
+ * 请求体：{ birthday: "MM-DD" | null, deathday: "MM-DD" | null }，两个字段都必须给出，
+ * 传 null 表示清空对应日期。非法月日（格式错误或该月无此日，如 02-30）返回 400
+ * 且不改变任何数据；与现值完全一致时同样不写入。成功走统一写入入口（可撤销）。
+ */
+app.patch('/api/members/:id/memorials', (req, res) => {
+  const body = req.body || {};
+  if (!('birthday' in body) || !('deathday' in body)) {
+    return sendError(res, 400, '请同时提供生日与忌日字段（不登记请传 null）');
+  }
+  const result = store.setMemorials(req.params.id, body.birthday, body.deathday);
+  if (result.error) return sendError(res, result.status || 400, result.error);
+  res.json(store.list());
+});
+
+/**
+ * 未来 30 天纪念日清单（只读）。
+ * 查询参数 today=YYYY-MM-DD 为浏览器所在时区的本地日期（由前端按本地日历提交）；
+ * 缺省时以服务端当前 UTC 日期兜底。服务端逐年求每名成员生日 / 忌日的下一次日期
+ * （2 月 29 日在平年落到 2 月 28 日，跨年准确），只返回距今天数 0–29 天的条目，
+ * 按日期、同日按姓名、类型（生日先于忌日）稳定排序，附 date 与 daysFromToday。
+ */
+app.get('/api/memorials/upcoming', (req, res) => {
+  const today =
+    typeof req.query.today === 'string' && req.query.today.trim()
+      ? req.query.today.trim()
+      : new Date().toISOString().slice(0, 10);
+  const result = store.upcomingMemorials(today);
+  if (result.error) return sendError(res, result.status || 400, result.error);
+  res.json(result);
 });
 
 /**
@@ -320,13 +353,19 @@ app.post('/api/undo', (req, res) => {
 });
 
 /**
- * 下载备份：仅含成员 ID、姓名与父母→子女关系的 JSON 文件，
- * 可迁移到另一台本地实例恢复。不含版本号与撤销快照。
+ * 下载备份：含成员 ID、姓名、生日 / 忌日（公历月日，未登记为 null）与
+ * 父母→子女关系的 JSON 文件，可迁移到另一台本地实例恢复。不含版本号与撤销快照。
+ * 旧版本生成的备份可没有 birthday / deathday 字段，恢复时一律视为空。
  */
 app.get('/api/backup', (req, res) => {
   const data = store.list();
   const backup = {
-    members: data.members.map((m) => ({ id: m.id, name: m.name })),
+    members: data.members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      birthday: m.birthday,
+      deathday: m.deathday,
+    })),
     edges: data.edges.map((e) => ({ parentId: e.parentId, childId: e.childId })),
   };
   const filename = `family-backup-${new Date().toISOString().slice(0, 10)}.json`;

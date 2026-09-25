@@ -169,6 +169,7 @@ function render() {
   renderStaleBanner();
   renderUndo();
   renderRestore();
+  renderMemorials();
 }
 
 /* ---------------- 最近操作与撤销 ---------------- */
@@ -1465,6 +1466,222 @@ function renderRestoreResult(box, data) {
   box.appendChild(okBox);
 }
 
+/* ---------------- 成员纪念日（生日 / 忌日） ---------------- */
+
+// 最近一次未来 30 天清单：{ today, items }；按浏览器本地日期请求
+let upcomingMemorialsData = null;
+let upcomingToday = localDateString(new Date());
+let upcomingLoading = false;
+
+/** 浏览器本地日历日期 -> "YYYY-MM-DD"（不用 toISOString，避免被换算成 UTC 日期） */
+function localDateString(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** 前端预校验公历月日输入：空串视为清空；合法归一化为 "MM-DD"，非法返回 null */
+function normalizeMonthDayInput(value) {
+  const text = (value || '').trim();
+  if (!text) return { value: null };
+  const match = /^(\d{1,2})[/ .-](\d{1,2})$/.exec(text);
+  if (!match) return { error: '请按「月-日」填写，如 02-29' };
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (month < 1 || month > 12) return { error: `月份 ${month} 无效（须为 1–12）` };
+  const maxDay = month === 2 ? 29 : [4, 6, 9, 11].includes(month) ? 30 : 31;
+  if (day < 1 || day > maxDay) return { error: `${month} 月没有 ${day} 日` };
+  return {
+    value: `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  };
+}
+
+function renderMemorials() {
+  renderMemorialMemberSelect();
+  renderRegisteredMemorials();
+  renderUpcomingMemorials();
+}
+
+function renderMemorialMemberSelect() {
+  const select = $('memorial-member');
+  if (!select) return;
+  const current = select.value;
+  select.replaceChildren();
+  if (state.members.length === 0) {
+    select.appendChild(el('option', { value: '', text: '（请先添加成员）' }));
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  select.appendChild(el('option', { value: '', text: '（选择成员）' }));
+  for (const m of state.members) {
+    select.appendChild(el('option', {
+      value: m.id,
+      text: m.name,
+      ...(m.id === current ? { selected: 'selected' } : {}),
+    }));
+  }
+  if (!current) select.value = '';
+}
+
+function renderRegisteredMemorials() {
+  const list = $('memorial-registered-list');
+  const count = $('memorial-count');
+  list.replaceChildren();
+
+  const registered = state.members.filter((m) => m.birthday || m.deathday);
+  count.textContent = String(registered.length);
+
+  if (registered.length === 0) {
+    list.appendChild(el('li', {
+      class: 'empty-hint',
+      text: state.members.length
+        ? '尚未登记任何纪念日：在上方选择成员，填写生日 / 忌日（留空表示不登记）后保存。'
+        : '尚未添加成员，请先在「① 成员」中录入。',
+    }));
+    return;
+  }
+
+  // 按姓名排序，保证展示稳定
+  const sorted = [...registered].sort((a, b) => a.name.localeCompare(b.name, 'zh') || a.id.localeCompare(b.id));
+  for (const m of sorted) {
+    const li = el('li', { class: 'memorial-row' });
+    li.appendChild(el('span', { class: 'memorial-name', text: m.name }));
+    li.appendChild(el('span', { class: 'memorial-dates' }, [
+      renderDateChip('生日', m.birthday),
+      renderDateChip('忌日', m.deathday),
+    ]));
+    li.appendChild(el('button', {
+      class: 'danger-link',
+      text: '编辑',
+      onClick: () => editMemorial(m.id),
+    }));
+    list.appendChild(li);
+  }
+}
+
+function renderDateChip(label, value) {
+  return el('span', { class: value ? 'memorial-chip' : 'memorial-chip empty' }, [
+    el('strong', { text: `${label}：` }),
+    document.createTextNode(value || '未登记'),
+  ]);
+}
+
+/** 把成员现有纪念日填入表单并聚焦生日输入框 */
+function editMemorial(memberId) {
+  const m = state.members.find((x) => x.id === memberId);
+  if (!m) return;
+  const select = $('memorial-member');
+  select.value = m.id;
+  $('memorial-birthday').value = m.birthday || '';
+  $('memorial-deathday').value = m.deathday || '';
+  $('memorial-birthday').focus();
+}
+
+/** 选择成员变化时：若表单尚未填写，则带出该成员现有值，便于修改 */
+$('memorial-member')?.addEventListener('change', (e) => {
+  const m = state.members.find((x) => x.id === e.target.value);
+  if (!m) return;
+  // 仅当两个输入都为空时自动带出，避免覆盖用户正在编辑的内容
+  if (!$('memorial-birthday').value.trim() && !$('memorial-deathday').value.trim()) {
+    $('memorial-birthday').value = m.birthday || '';
+    $('memorial-deathday').value = m.deathday || '';
+  }
+});
+
+$('memorial-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const memberId = $('memorial-member').value;
+  if (!memberId) { toast('请先选择成员', true); return; }
+
+  const birthday = normalizeMonthDayInput($('memorial-birthday').value);
+  const deathday = normalizeMonthDayInput($('memorial-deathday').value);
+  if (birthday.error) { toast(`生日：${birthday.error}`, true); $('memorial-birthday').focus(); return; }
+  if (deathday.error) { toast(`忌日：${deathday.error}`, true); $('memorial-deathday').focus(); return; }
+
+  try {
+    const data = await api(`/api/members/${encodeURIComponent(memberId)}/memorials`, {
+      method: 'PATCH',
+      body: JSON.stringify({ birthday: birthday.value, deathday: deathday.value }),
+    });
+    applyStateAndRender(data);
+    fetchUpcomingMemorials();
+    toast('纪念日已保存');
+  } catch (err) {
+    // 400：非法日期 / 无变化；404：成员已被删除——数据未改变，刷新列表保持一致
+    if (err.status === 404) refresh().catch(() => {});
+    toast(err.message, true);
+  }
+});
+
+$('memorial-refresh')?.addEventListener('click', () => {
+  upcomingToday = localDateString(new Date());
+  fetchUpcomingMemorials();
+});
+
+/** 拉取从浏览器本地日期（含当天）起的未来 30 天清单 */
+async function fetchUpcomingMemorials() {
+  if (upcomingLoading) return;
+  upcomingLoading = true;
+  renderUpcomingMemorials();
+  try {
+    const params = new URLSearchParams({ today: upcomingToday });
+    const data = await api(`/api/memorials/upcoming?${params.toString()}`);
+    // 只接受与当前请求日期一致的结果，避免快速切换时旧响应覆盖新结果
+    if (data.today !== upcomingToday) return;
+    upcomingMemorialsData = data;
+    renderUpcomingMemorials();
+  } catch (err) {
+    upcomingMemorialsData = null;
+    renderUpcomingMemorials(err.message);
+  } finally {
+    upcomingLoading = false;
+  }
+}
+
+function renderUpcomingMemorials(errorMessage) {
+  const list = $('memorial-upcoming-list');
+  const todayBadge = $('memorial-today');
+  if (!list) return;
+  list.replaceChildren();
+  todayBadge.textContent = `本地日期 ${upcomingToday}`;
+
+  if (errorMessage) {
+    list.appendChild(el('li', { class: 'empty-hint', text: `清单加载失败：${errorMessage}` }));
+    return;
+  }
+  if (upcomingLoading && !upcomingMemorialsData) {
+    list.appendChild(el('li', { class: 'empty-hint', text: '清单加载中…' }));
+    return;
+  }
+  const data = upcomingMemorialsData;
+  if (!data) {
+    list.appendChild(el('li', { class: 'empty-hint', text: '点击「按今天刷新」生成未来 30 天清单。' }));
+    return;
+  }
+  if (data.items.length === 0) {
+    list.appendChild(el('li', {
+      class: 'empty-hint',
+      text: `从 ${data.today} 起 30 天内没有任何生日或忌日。`,
+    }));
+    return;
+  }
+  for (const item of data.items) {
+    const li = el('li', { class: `memorial-row upcoming ${item.type}` });
+    li.appendChild(el('span', { class: 'memorial-days', text: item.daysFromToday === 0 ? '今天' : `${item.daysFromToday} 天后` }));
+    li.appendChild(el('span', { class: 'memorial-name', text: item.name }));
+    li.appendChild(el('span', {
+      class: `memorial-type-tag ${item.type}`,
+      text: item.typeLabel,
+    }));
+    li.appendChild(el('span', { class: 'memorial-date', text: `${item.date}（${item.monthDay}）` }));
+    list.appendChild(li);
+  }
+}
+
 /* ---------------- 启动 ---------------- */
 
-refresh().catch((err) => toast(`初始化失败：${err.message}`, true));
+refresh()
+  .then(() => fetchUpcomingMemorials())
+  .catch((err) => toast(`初始化失败：${err.message}`, true));

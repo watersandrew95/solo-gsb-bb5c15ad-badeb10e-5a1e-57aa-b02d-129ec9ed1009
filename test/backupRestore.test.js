@@ -13,11 +13,16 @@ function tmpFile() {
   return path.join(dir, 'family.json');
 }
 
-/** 用 store 当前内容生成与下载接口一致的备份文本（仅成员 ID、姓名与关系） */
+/** 用 store 当前内容生成与下载接口一致的备份文本（含生日 / 忌日与关系） */
 function dumpBackup(store) {
   const data = store.list();
   return JSON.stringify({
-    members: data.members.map((m) => ({ id: m.id, name: m.name })),
+    members: data.members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      birthday: m.birthday,
+      deathday: m.deathday,
+    })),
     edges: data.edges.map((e) => ({ parentId: e.parentId, childId: e.childId })),
   });
 }
@@ -51,7 +56,11 @@ test('备份校验：合法文件通过，返回净化后的成员与关系', ()
   assert.equal(r.errors.length, 0);
   assert.equal(r.memberCount, 2);
   assert.equal(r.edgeCount, 1);
-  assert.deepEqual(r.members, parsed.members);
+  // 旧备份缺少纪念日字段时归一化为 null（生日 / 忌日为空）
+  assert.deepEqual(r.members, [
+    { id: 'a', name: '甲', birthday: null, deathday: null },
+    { id: 'b', name: '乙', birthday: null, deathday: null },
+  ]);
   assert.deepEqual(r.edges, parsed.edges);
 });
 
