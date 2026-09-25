@@ -8,7 +8,7 @@
  * 预检与提交之间家谱若被其他操作改动，version 不匹配则整批拒绝。
  *
  * 撤销（仅一级，不能重复撤销）：
- * 每次成功写入前，先把「变更前的完整家谱」（含成员 ID/姓名、全部关系与当时版本）
+ * 每次成功写入前，先把「变更前的完整家谱」（含成员 ID/姓名/纪念日、全部关系与当时版本）
  * 作为唯一可撤销快照 undo，与新状态、新版本在同一次写盘里原子持久化；
  * 因此重启后仍可撤销。撤销本身也是一次成功写入：恢复快照后 version 继续 +1、
  * 快照清空并落盘，之后不能再次撤销（redo 不存在），直到下一次成功写入产生新快照。
@@ -26,6 +26,26 @@ const {
   isReachableUp,
   MAX_MEMBERS,
 } = require('./familyGraph');
+const {
+  ANNIVERSARY_TYPES,
+  TYPE_LABEL,
+  validateMonthDay,
+  sanitizeMonthDay,
+} = require('./anniversaries');
+
+/** 成员纪念日字段的序列化（深拷贝 { month, day }，缺失为 null） */
+function serializeAnniversaries(member) {
+  const copy = (md) => (md ? { month: md.month, day: md.day } : null);
+  return {
+    birthday: copy(member.birthday),
+    deathday: copy(member.deathday),
+  };
+}
+
+/** 纪念日月日的可读展示（用于撤销快照的操作说明） */
+function monthDayLabel(md) {
+  return md ? `${md.month}月${md.day}日` : '未登记';
+}
 
 function createStore(filePath) {
   const loaded = loadState(filePath);
@@ -38,7 +58,11 @@ function createStore(filePath) {
   function serializeFamily() {
     return {
       maxMembers: state.maxMembers,
-      members: state.members.map((m) => ({ id: m.id, name: m.name })),
+      members: state.members.map((m) => ({
+        id: m.id,
+        name: m.name,
+        ...serializeAnniversaries(m),
+      })),
       edges: edgesList(state),
     };
   }
@@ -98,7 +122,11 @@ function createStore(filePath) {
     return {
       version,
       maxMembers: state.maxMembers,
-      members: state.members.map((m) => ({ id: m.id, name: m.name })),
+      members: state.members.map((m) => ({
+        id: m.id,
+        name: m.name,
+        ...serializeAnniversaries(m),
+      })),
       edges: edgesList(state),
       undo: undo
         ? { label: undo.label, time: undo.time, version: undo.version }
@@ -112,7 +140,7 @@ function createStore(filePath) {
     if (state.members.length >= state.maxMembers) {
       return { error: `成员数量上限为 ${state.maxMembers} 人，无法继续添加` };
     }
-    const member = { id: crypto.randomUUID(), name };
+    const member = { id: crypto.randomUUID(), name, birthday: null, deathday: null };
     commit(`添加成员「${name}」`, () => {
       state.members.push(member);
       state.parentsOf[member.id] = [];
@@ -132,7 +160,48 @@ function createStore(filePath) {
     return { error: null, member };
   }
 
-  /** 删除成员：同时移除以其为父母或子女的全部边（级联） */
+  /**
+   * 登记 / 修改 / 清除成员的纪念日（生日与忌日一次整体设定，null 表示不登记）。
+   * 非法月日（如 2 月 30 日、13 月）整单拒绝且不改变任何数据；
+   * 合法时走统一 commit 入口：版本 +1、产生撤销快照、随成员数据一次落盘。
+   * 请求体必须同时给出 birthday 与 deathday 两个字段（不登记显式传 null），
+   * 避免「漏传字段」被误当作「清除」。
+   */
+  function setAnniversaries(id, raw) {
+    const member = state.members.find((m) => m.id === id);
+    if (!member) return { error: '成员不存在', status: 404 };
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { error: '请求体必须是对象：{ "birthday": …, "deathday": … }', status: 400 };
+    }
+    for (const type of ANNIVERSARY_TYPES) {
+      if (!(type in raw)) {
+        return {
+          error: `缺少 ${type} 字段：请同时提供生日与忌日（不登记请显式传 null）`,
+          status: 400,
+        };
+      }
+    }
+    const next = {};
+    for (const type of ANNIVERSARY_TYPES) {
+      const check = validateMonthDay(raw[type]);
+      if (check.error) {
+        return { error: `${TYPE_LABEL[type]}无效：${check.error}`, status: 400 };
+      }
+      next[type] = check.value;
+    }
+
+    const cleared = !next.birthday && !next.deathday;
+    const label = cleared
+      ? `清除「${member.name}」的纪念日`
+      : `更新「${member.name}」的纪念日（生日 ${monthDayLabel(next.birthday)} · 忌日 ${monthDayLabel(next.deathday)}）`;
+    commit(label, () => {
+      member.birthday = next.birthday;
+      member.deathday = next.deathday;
+    });
+    return { error: null, member };
+  }
+
+  /** 删除成员：同时移除以其为父母或子女的全部边（级联）；纪念日随成员一并删除 */
   function deleteMember(id) {
     const member = state.members.find((m) => m.id === id);
     if (!member) return { error: '成员不存在' };
@@ -339,6 +408,7 @@ function createStore(filePath) {
     list,
     addMember,
     renameMember,
+    setAnniversaries,
     deleteMember,
     addEdge,
     deleteEdge,
@@ -362,7 +432,11 @@ function writeFile(filePath, version, state, undo) {
   const snapshot = {
     version,
     maxMembers: state.maxMembers,
-    members: state.members.map((m) => ({ id: m.id, name: m.name })),
+    members: state.members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      ...serializeAnniversaries(m),
+    })),
     edges: edgesList(state),
     undo: undo
       ? {
@@ -402,7 +476,12 @@ function familyToState(family) {
 function stateFromValidBackup(members, edges, maxMembers) {
   const state = createState(Number.isInteger(maxMembers) ? maxMembers : MAX_MEMBERS);
   for (const m of members) {
-    state.members.push({ id: m.id, name: m.name });
+    state.members.push({
+      id: m.id,
+      name: m.name,
+      birthday: m.birthday || null,
+      deathday: m.deathday || null,
+    });
     state.parentsOf[m.id] = [];
   }
   for (const e of edges) {
@@ -446,7 +525,13 @@ function buildState(raw) {
   if (raw && Array.isArray(raw.members)) {
     for (const m of raw.members) {
       if (m && typeof m.id === 'string' && typeof m.name === 'string') {
-        state.members.push({ id: m.id, name: m.name });
+        // 旧数据文件没有纪念日字段：净化后为 null（视为未登记）
+        state.members.push({
+          id: m.id,
+          name: m.name,
+          birthday: sanitizeMonthDay(m.birthday),
+          deathday: sanitizeMonthDay(m.deathday),
+        });
       }
     }
   }
@@ -488,7 +573,11 @@ function serializeFamilyFromRaw(rawFamily) {
   const restored = buildState(rawFamily);
   return {
     maxMembers: restored.maxMembers,
-    members: restored.members.map((m) => ({ id: m.id, name: m.name })),
+    members: restored.members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      ...serializeAnniversaries(m),
+    })),
     edges: edgesList(restored),
   };
 }

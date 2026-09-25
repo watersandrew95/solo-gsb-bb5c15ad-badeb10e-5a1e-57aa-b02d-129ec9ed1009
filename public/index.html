@@ -15,7 +15,8 @@
       选中两人即可沿父母链查询总代数最少的全部共同祖先及最短亲缘路径；
       还可一键核查全部「辈分矛盾」：同一对祖先与后代沿不同路径的最少 / 最多代数不一致时逐条列出；
       「变更影响预览」可在不落盘的假设图上试算新增 / 移除一条关系前后辈分矛盾的逐对变化；
-      「备份与恢复」可下载仅含成员 ID、姓名与关系的 JSON 备份，选择备份文件预览校验后整体恢复（可撤销）。
+      「备份与恢复」可下载仅含成员 ID、姓名、纪念日与关系的 JSON 备份，选择备份文件预览校验后整体恢复（可撤销）；
+      「成员纪念日」可为每名成员登记一个生日与一个忌日（公历月日），并查看包含今天在内的未来 30 天纪念日清单。
     </p>
   </header>
 
@@ -29,7 +30,7 @@
       </div>
       <p class="empty-hint">
         每次成功写入都会保存变更前的完整家谱作为唯一可撤销快照（重启后仍可撤销）；
-        撤销会恢复成员 ID、姓名与全部关系原貌、推进版本并清空快照，只能撤销一次。
+        撤销会恢复成员 ID、姓名、纪念日与全部关系原貌、推进版本并清空快照，只能撤销一次。
       </p>
     </section>
 
@@ -183,13 +184,31 @@
       </div>
     </section>
 
+    <!-- 成员纪念日 -->
+    <section class="card wide" aria-labelledby="anniv-title">
+      <h2 id="anniv-title">⑦ 成员纪念日</h2>
+      <h3 class="list-title">未来 30 天纪念日 <span id="upcoming-count" class="badge">0</span></h3>
+      <p class="empty-hint">
+        按本机今天（浏览器本地日期）生成包含当天的未来 30 天清单；2 月 29 日登记的纪念日在平年按 2 月 28 日提醒。
+      </p>
+      <ul id="upcoming-list" class="upcoming-list" aria-live="polite"></ul>
+
+      <h3 class="list-title">登记 / 修改纪念日</h3>
+      <p class="empty-hint">
+        每名成员可登记一个生日与一个忌日（公历月日，不含年份）；纪念日随成员数据一同保存，
+        删除成员、撤销与备份恢复时一并处理。
+      </p>
+      <ul id="anniv-list" class="member-list anniv-list" aria-live="polite"></ul>
+      <p class="empty-hint" id="anniv-empty" hidden>尚未添加成员：请先在「① 成员」中录入。</p>
+    </section>
+
     <!-- 备份与恢复 -->
     <section class="card wide" aria-labelledby="backup-title">
       <h2 id="backup-title">⑥ 备份与恢复</h2>
       <div class="backup-actions">
         <button type="button" id="backup-download">下载备份（JSON）</button>
         <p class="empty-hint">
-          备份文件仅含成员 ID、姓名与父母→子女关系，可迁移到另一台本地实例恢复。
+          备份文件仅含成员 ID、姓名、纪念日与父母→子女关系，可迁移到另一台本地实例恢复。
         </p>
       </div>
       <div id="restore-panel" class="batch-panel">

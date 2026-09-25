@@ -9,6 +9,7 @@ const {
   validateEdge,
   previewEdgeImpact,
 } = require('./familyGraph');
+const { parseLocalDate, upcomingAnniversaries } = require('./anniversaries');
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -58,11 +59,44 @@ app.patch('/api/members/:id', (req, res) => {
   res.json(store.list());
 });
 
-/** 删除成员（级联删除相关关系） */
+/** 删除成员（级联删除相关关系；纪念日随成员一并删除） */
 app.delete('/api/members/:id', (req, res) => {
   const result = store.deleteMember(req.params.id);
   if (result.error) return sendError(res, 404, result.error);
   res.json(store.list());
+});
+
+/**
+ * 登记 / 修改 / 清除成员纪念日：生日与忌日一次整体设定。
+ * 请求体：{ "birthday": { "month": 3, "day": 15 } | null,
+ *           "deathday": { "month": 10, "day": 2 } | null }
+ * 两个字段都必须给出（不登记显式传 null）；非法月日（如 2 月 30 日）
+ * 返回 400 且不改变任何数据。成功写入随成员数据持久化，可经「最近操作」撤销。
+ */
+app.put('/api/members/:id/anniversaries', (req, res) => {
+  const result = store.setAnniversaries(req.params.id, req.body);
+  if (result.error) return sendError(res, result.status || 400, result.error);
+  res.json(store.list());
+});
+
+/**
+ * 未来 30 天纪念日清单（只读）：按浏览器提交的本地日期生成，包含当天。
+ * 查询参数 from=YYYY-MM-DD（省略时取服务器本地当天；格式非法返回 400）。
+ * 逐年求每项纪念日的下一次发生日期：2 月 29 日在平年落到 2 月 28 日，跨年准确；
+ * 同日按姓名、类型（生日先于忌日）稳定排序，每项附距今天数 daysUntil（当天为 0）。
+ */
+app.get('/api/anniversaries/upcoming', (req, res) => {
+  let from;
+  if (typeof req.query.from === 'string' && req.query.from.trim()) {
+    from = parseLocalDate(req.query.from);
+    if (!from) {
+      return sendError(res, 400, 'from 参数必须是合法的公历日期（YYYY-MM-DD），如 2026-09-25');
+    }
+  } else {
+    const now = new Date();
+    from = { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() };
+  }
+  res.json(upcomingAnniversaries(store.getState().members, from));
 });
 
 /**
@@ -320,13 +354,18 @@ app.post('/api/undo', (req, res) => {
 });
 
 /**
- * 下载备份：仅含成员 ID、姓名与父母→子女关系的 JSON 文件，
+ * 下载备份：仅含成员 ID、姓名、纪念日与父母→子女关系的 JSON 文件，
  * 可迁移到另一台本地实例恢复。不含版本号与撤销快照。
  */
 app.get('/api/backup', (req, res) => {
   const data = store.list();
   const backup = {
-    members: data.members.map((m) => ({ id: m.id, name: m.name })),
+    members: data.members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      birthday: m.birthday || null,
+      deathday: m.deathday || null,
+    })),
     edges: data.edges.map((e) => ({ parentId: e.parentId, childId: e.childId })),
   };
   const filename = `family-backup-${new Date().toISOString().slice(0, 10)}.json`;

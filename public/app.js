@@ -52,6 +52,9 @@ let restorePreview = null;
 let restoreStale = false;
 let restoreStaleReason = '';
 
+// 未来 30 天纪念日清单（服务端按浏览器提交的本地日期计算）：{ from, days, items }
+let upcoming = null;
+
 const $ = (id) => document.getElementById(id);
 
 /** 安全创建 DOM 元素，避免 innerHTML 注入 */
@@ -118,6 +121,7 @@ async function refresh() {
     invalidateRestorePreview('家谱已发生写入，以下恢复预览基于旧版本，请重新预览');
   }
   render();
+  loadUpcoming();
 }
 
 function applyStateAndRender(data) {
@@ -137,6 +141,7 @@ function applyStateAndRender(data) {
     invalidateRestorePreview('家谱已发生写入，以下恢复预览基于旧版本，请重新预览');
   }
   render();
+  loadUpcoming();
 }
 
 function reconcileSelection() {
@@ -169,6 +174,8 @@ function render() {
   renderStaleBanner();
   renderUndo();
   renderRestore();
+  renderAnniversaries();
+  renderUpcoming();
 }
 
 /* ---------------- 最近操作与撤销 ---------------- */
@@ -187,7 +194,7 @@ function renderUndo() {
   const info = $('undo-info');
   const btn = $('undo-button');
   if (!state.undo) {
-    info.textContent = '暂无可撤销的操作：成功添加/修改/删除成员、建立/删除关系、批量提交或合并成员后，此处会显示最近一次操作。';
+    info.textContent = '暂无可撤销的操作：成功添加/修改/删除成员、登记/清除纪念日、建立/删除关系、批量提交或合并成员后，此处会显示最近一次操作。';
     btn.disabled = true;
     btn.textContent = '撤销这次操作';
     return;
@@ -1463,6 +1470,196 @@ function renderRestoreResult(box, data) {
     okBox.appendChild(chips);
   }
   box.appendChild(okBox);
+}
+
+/* ---------------- 成员纪念日 ---------------- */
+
+function fmtMonthDay(md) {
+  return md ? `${md.month}月${md.day}日` : '未登记';
+}
+
+/** 浏览器本地今天 → YYYY-MM-DD（服务端据此生成含当天的 30 天清单） */
+function localToday() {
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${mm}-${dd}`;
+}
+
+/** 拉取未来 30 天纪念日清单（只读；任何纪念日/成员变更后随状态刷新重新拉取） */
+async function loadUpcoming() {
+  try {
+    upcoming = await api(`/api/anniversaries/upcoming?from=${localToday()}`);
+    renderUpcoming();
+  } catch (err) {
+    toast(`纪念日清单加载失败：${err.message}`, true);
+  }
+}
+
+const WEEKDAYS = '日一二三四五六';
+
+function renderUpcoming() {
+  const list = $('upcoming-list');
+  const count = $('upcoming-count');
+  list.replaceChildren();
+  if (!upcoming) {
+    count.textContent = '0';
+    list.appendChild(el('li', { class: 'empty-hint', text: '清单加载中…' }));
+    return;
+  }
+  count.textContent = String(upcoming.items.length);
+  if (upcoming.items.length === 0) {
+    list.appendChild(el('li', {
+      class: 'empty-hint',
+      text: `自 ${upcoming.from} 起 30 天内没有已登记的纪念日。`,
+    }));
+    return;
+  }
+  for (const item of upcoming.items) {
+    const [y, mo, d] = item.date.split('-').map(Number);
+    const weekday = WEEKDAYS[new Date(y, mo - 1, d).getDay()];
+    const li = el('li', { class: 'upcoming-item' });
+    li.appendChild(el('span', { class: 'upcoming-date', text: `${item.date} 周${weekday}` }));
+    li.appendChild(el('span', { class: `anniv-tag ${item.type}`, text: item.typeLabel }));
+    li.appendChild(el('span', { class: 'name', text: item.memberName }));
+    // 平年 2 月 29 日落到 2 月 28 日时，标注实际登记日
+    const adjusted = item.month === 2 && item.day === 29 && item.date.slice(5) !== '02-29';
+    li.appendChild(el('span', {
+      class: 'sub',
+      text: adjusted ? '登记 2月29日（平年按 2月28日）' : `${item.month}月${item.day}日`,
+    }));
+    li.appendChild(el('span', {
+      class: 'days-until',
+      text: item.daysUntil === 0
+        ? '今天'
+        : item.daysUntil === 1
+          ? '明天'
+          : item.daysUntil === 2
+            ? '后天'
+            : `${item.daysUntil} 天后`,
+    }));
+    list.appendChild(li);
+  }
+}
+
+function renderAnniversaries() {
+  const list = $('anniv-list');
+  const empty = $('anniv-empty');
+  list.replaceChildren();
+  if (state.members.length === 0) {
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  for (const m of state.members) {
+    const li = el('li');
+    li.appendChild(el('span', { class: 'name', text: m.name }));
+    li.appendChild(el('span', {
+      class: 'sub',
+      text: `生日 ${fmtMonthDay(m.birthday)} · 忌日 ${fmtMonthDay(m.deathday)}`,
+    }));
+    li.appendChild(el('button', {
+      class: 'danger-link',
+      text: (m.birthday || m.deathday) ? '修改' : '登记',
+      onClick: () => startAnnivEdit(li, m),
+    }));
+    if (m.birthday || m.deathday) {
+      li.appendChild(el('button', {
+        class: 'danger-link',
+        text: '清除',
+        onClick: () => clearAnniversaries(m),
+      }));
+    }
+    list.appendChild(li);
+  }
+}
+
+/** 纪念日行内编辑：生日、忌日各一组「月 + 日」，月选「不登记」即清除该项 */
+function startAnnivEdit(li, member) {
+  li.classList.add('anniv-editing');
+  li.replaceChildren();
+
+  const makeRow = (label, current) => {
+    const monthSel = el('select');
+    monthSel.appendChild(el('option', { value: '', text: '不登记' }));
+    for (let mo = 1; mo <= 12; mo++) {
+      monthSel.appendChild(el('option', { value: String(mo), text: `${mo} 月` }));
+    }
+    if (current) monthSel.value = String(current.month);
+    const dayInput = el('input', {
+      type: 'number',
+      min: '1',
+      max: '31',
+      placeholder: '日',
+      value: current ? String(current.day) : '',
+    });
+    const row = el('label', { class: 'anniv-field' }, [
+      el('span', { class: 'anniv-field-label', text: label }),
+      monthSel,
+      dayInput,
+    ]);
+    return { row, monthSel, dayInput };
+  };
+
+  const birthday = makeRow('生日', member.birthday);
+  const deathday = makeRow('忌日', member.deathday);
+  const saveBtn = el('button', { type: 'button', text: '保存' });
+  const cancelBtn = el('button', { type: 'button', text: '取消', class: 'danger-link' });
+
+  const readValue = ({ monthSel, dayInput }, label) => {
+    if (!monthSel.value) return { value: null };
+    const month = Number(monthSel.value);
+    const day = Number(dayInput.value);
+    if (!Number.isInteger(day) || day < 1 || day > 31) {
+      return { error: `请填写${label}的日期（1–31 的整数）` };
+    }
+    return { value: { month, day } };
+  };
+
+  const doSave = async () => {
+    const b = readValue(birthday, '生日');
+    if (b.error) { toast(b.error, true); return; }
+    const d = readValue(deathday, '忌日');
+    if (d.error) { toast(d.error, true); return; }
+    saveBtn.disabled = true;
+    try {
+      const data = await api(`/api/members/${encodeURIComponent(member.id)}/anniversaries`, {
+        method: 'PUT',
+        body: JSON.stringify({ birthday: b.value, deathday: d.value }),
+      });
+      applyStateAndRender(data);
+      toast('纪念日已保存');
+    } catch (err) {
+      // 非法日期被服务端拒绝：数据不变，保持编辑状态便于修正
+      toast(err.message, true);
+      saveBtn.disabled = false;
+    }
+  };
+
+  saveBtn.addEventListener('click', doSave);
+  cancelBtn.addEventListener('click', () => renderAnniversaries());
+  li.append(
+    el('span', { class: 'name', text: member.name }),
+    birthday.row,
+    deathday.row,
+    saveBtn,
+    cancelBtn,
+  );
+}
+
+/** 清除成员全部纪念日（生日与忌日同时置空） */
+async function clearAnniversaries(member) {
+  if (!confirm(`确定清除「${member.name}」的生日与忌日登记？`)) return;
+  try {
+    const data = await api(`/api/members/${encodeURIComponent(member.id)}/anniversaries`, {
+      method: 'PUT',
+      body: JSON.stringify({ birthday: null, deathday: null }),
+    });
+    applyStateAndRender(data);
+    toast('纪念日已清除');
+  } catch (err) {
+    toast(err.message, true);
+  }
 }
 
 /* ---------------- 启动 ---------------- */

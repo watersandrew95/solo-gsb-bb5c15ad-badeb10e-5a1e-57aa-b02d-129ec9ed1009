@@ -51,7 +51,11 @@ test('备份校验：合法文件通过，返回净化后的成员与关系', ()
   assert.equal(r.errors.length, 0);
   assert.equal(r.memberCount, 2);
   assert.equal(r.edgeCount, 1);
-  assert.deepEqual(r.members, parsed.members);
+  // 旧备份缺少纪念日字段：净化后视为未登记（null）
+  assert.deepEqual(r.members, [
+    { id: 'a', name: '甲', birthday: null, deathday: null },
+    { id: 'b', name: '乙', birthday: null, deathday: null },
+  ]);
   assert.deepEqual(r.edges, parsed.edges);
 });
 

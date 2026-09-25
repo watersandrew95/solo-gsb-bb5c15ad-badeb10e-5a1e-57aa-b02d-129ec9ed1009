@@ -555,3 +555,79 @@ button.danger-link {
   padding: 2px 10px;
   font-size: 0.82rem;
 }
+
+/* 成员纪念日 */
+.upcoming-list {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.upcoming-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.93rem;
+  flex-wrap: wrap;
+}
+
+.upcoming-item .upcoming-date {
+  color: var(--muted);
+  font-size: 0.85rem;
+  min-width: 128px;
+}
+
+.upcoming-item .name { font-weight: 600; word-break: break-all; }
+.upcoming-item .sub { color: var(--muted); font-size: 0.8rem; flex: 1; }
+
+.upcoming-item .days-until {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--primary);
+  background: #dbeafe;
+  border-radius: 999px;
+  padding: 1px 10px;
+  white-space: nowrap;
+}
+
+.anniv-tag {
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.anniv-tag.birthday { color: #047857; background: #d1fae5; }
+.anniv-tag.deathday { color: #6b7280; background: #e5e7eb; }
+
+.anniv-list li.anniv-editing { flex-wrap: wrap; }
+
+.anniv-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.anniv-field select { width: auto; min-width: 86px; }
+
+.anniv-field input[type="number"] {
+  width: 64px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  background: #fff;
+  color: var(--text);
+}
+
+.anniv-field input[type="number"]:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.35);
+  border-color: var(--primary);
+}

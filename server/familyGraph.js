@@ -13,11 +13,13 @@ const MAX_MEMBERS = 30;
 const MAX_BATCH_EDGES = 100;
 const MAX_BACKUP_NAME_LENGTH = 50;
 
+const { ANNIVERSARY_TYPES, TYPE_LABEL, validateMonthDay } = require('./anniversaries');
+
 /** 创建一个空的家谱状态对象 */
 function createState(maxMembers = MAX_MEMBERS) {
   return {
     maxMembers,
-    members: [], // [{ id, name }]
+    members: [], // [{ id, name, birthday, deathday }]（纪念日为 { month, day } 或 null）
     parentsOf: {}, // memberId -> [parentId, ...]
   };
 }
@@ -769,8 +771,10 @@ function previewEdgeImpact(state, change) {
 /**
  * 备份文件整份校验（纯函数，不修改任何状态）。
  *
- * 备份格式（与下载接口一致，仅含成员 ID、姓名与关系）：
- *   { "members": [{ "id", "name" }], "edges": [{ "parentId", "childId" }] }
+ * 备份格式（与下载接口一致，仅含成员 ID、姓名、纪念日与关系）：
+ *   { "members": [{ "id", "name", "birthday", "deathday" }], "edges": [{ "parentId", "childId" }] }
+ * 成员的 birthday / deathday 为公历月日 { "month", "day" } 或 null（未登记）；
+ * 旧备份缺少这两个字段时视为未登记，字段存在但非法（如 2 月 30 日）逐项报错。
  *
  * 按与正常录入完全相同的规则严格校验整份文件，发现的问题**逐项列入 errors，
  * 绝不静默丢弃任何条目**：
@@ -786,7 +790,8 @@ function previewEdgeImpact(state, change) {
  *   valid, error,            // valid 为 false 时 error 为问题总数概要
  *   errors: [{ where: 'file'|'member'|'edge', index: number|null, message }],
  *   memberCount, edgeCount,  // 净化后（合法时即最终）的成员与关系数量
- *   members: [{ id, name }], // 净化后的成员（姓名已 trim；仅 valid 时可安全恢复）
+ *   members: [{ id, name, birthday, deathday }], // 净化后的成员（姓名已 trim，
+ *                                                // 纪念日缺失/未登记为 null；仅 valid 时可安全恢复）
  *   edges: [{ parentId, childId }],
  * }
  */
@@ -853,6 +858,19 @@ function validateBackup(raw, maxMembers = MAX_MEMBERS) {
       );
       ok = false;
     }
+    // 纪念日：旧备份缺少字段视为未登记（null）；字段存在但非法逐项报错
+    const anniversaries = { birthday: null, deathday: null };
+    for (const type of ANNIVERSARY_TYPES) {
+      const rawValue = entry[type];
+      if (rawValue === undefined || rawValue === null) continue;
+      const check = validateMonthDay(rawValue);
+      if (check.error) {
+        memberError(index, `${nth}的${TYPE_LABEL[type]}无效：${check.error}`);
+        ok = false;
+      } else {
+        anniversaries[type] = check.value;
+      }
+    }
     if (!id) return;
     if (idFirstIndex.has(id)) {
       memberError(index, `${nth}的 ID "${id}" 与第 ${idFirstIndex.get(id) + 1} 项重复`);
@@ -860,7 +878,7 @@ function validateBackup(raw, maxMembers = MAX_MEMBERS) {
     }
     idFirstIndex.set(id, index);
     if (name) nameOfId.set(id, name);
-    if (ok) members.push({ id, name });
+    if (ok) members.push({ id, name, birthday: anniversaries.birthday, deathday: anniversaries.deathday });
   });
 
   const label = (id) => (nameOfId.has(id) ? `「${nameOfId.get(id)}」` : `ID "${id}"`);
